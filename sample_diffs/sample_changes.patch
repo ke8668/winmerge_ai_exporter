@@ -1,0 +1,172 @@
+--- a/Src/DiffEngine.cpp
++++ b/Src/DiffEngine.cpp
+@@ -45,6 +45,7 @@
+ #include "DiffEngine.h"
+ #include "DiffUtils.h"
+ #include "FileFilter.h"
++#include "ConcurrentQueue.h"
+ 
+ namespace WinMerge {
+ 
+@@ -112,18 +113,32 @@
+ /**
+  * Compare two file buffers and populate result.
+  */
+-bool DiffEngine::CompareFiles(const FileBuffer& left, const FileBuffer& right, DiffResult& result) {
+-    if (left.empty() || right.empty()) {
+-        result.SetError(ERR_EMPTY_FILE);
+-        return false;
+-    }
+-    return RunDiff(left, right, result);
++bool DiffEngine::CompareFiles(
++    const FileBuffer& left,
++    const FileBuffer& right,
++    DiffResult& result,
++    const CompareOptions& opts) {
++    if (left.empty() || right.empty()) {
++        result.SetError(ERR_EMPTY_FILE);
++        return false;
++    }
++    if (opts.UseParallelDiff()) {
++        return RunParallelDiff(left, right, result, opts);
++    }
++    return RunDiff(left, right, result, opts);
+ }
+ 
++bool DiffEngine::RunParallelDiff(
++    const FileBuffer& left,
++    const FileBuffer& right,
++    DiffResult& result,
++    const CompareOptions& opts) {
++    std::mutex result_mutex;
++    std::vector<std::thread> workers;
++    ConcurrentQueue<DiffHunk> hunk_queue;
++    // Partition lines into chunks and diff in parallel
++    const size_t chunk_size = opts.ChunkSize();
++    for (size_t i = 0; i < left.LineCount(); i += chunk_size) {
++        workers.emplace_back([&, i]() {
++            auto chunk_result = DiffChunk(left, right, i, chunk_size);
++            std::lock_guard<std::mutex> lock(result_mutex);
++            result.Append(chunk_result);
++            hunk_queue.Push(std::move(chunk_result));
++        });
++    }
++    for (auto& w : workers) w.join();
++    return !result.HasErrors();
++}
++
+--- a/Src/DiffEngine.h
++++ b/Src/DiffEngine.h
+@@ -22,14 +22,22 @@
+ #pragma once
+ #include <vector>
++#include <mutex>
++#include <thread>
+ #include "DiffResult.h"
+ #include "FileBuffer.h"
++#include "CompareOptions.h"
+ 
+ namespace WinMerge {
+ 
+ class DiffEngine {
+ public:
+-    bool CompareFiles(const FileBuffer& left, const FileBuffer& right, DiffResult& result);
++    bool CompareFiles(
++        const FileBuffer& left,
++        const FileBuffer& right,
++        DiffResult& result,
++        const CompareOptions& opts = CompareOptions::Default());
++
+     bool CompareDirectories(const std::wstring& left, const std::wstring& right);
+     void SetFilter(const FileFilter* filter) { m_filter = filter; }
++    void SetMaxThreads(int n) { m_max_threads = n; }
++    int  GetMaxThreads() const { return m_max_threads; }
+ 
+ private:
+-    bool RunDiff(const FileBuffer& left, const FileBuffer& right, DiffResult& result);
++    bool RunDiff(const FileBuffer& left, const FileBuffer& right,
++                 DiffResult& result, const CompareOptions& opts);
++    bool RunParallelDiff(const FileBuffer& left, const FileBuffer& right,
++                         DiffResult& result, const CompareOptions& opts);
+     const FileFilter* m_filter = nullptr;
++    int m_max_threads = 4;
+ };
+ 
+--- a/Src/FileFilter.cpp
++++ b/Src/FileFilter.cpp
+@@ -8,3 +8,3 @@
+ // Minor whitespace fix
+-bool FileFilter::Match(const std::wstring &name) const{
++bool FileFilter::Match(const std::wstring& name) const {
+     return m_regex.IsMatch(name);
+--- a/Plugins/AIReview/ai_review.py
++++ b/Plugins/AIReview/ai_review.py
+@@ -0,0 +1,42 @@
++"""
++WinMerge AI Review Plugin
++Exposes export_ai_review_package to the WinMerge plugin host.
++"""
++import sys
++import os
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).parent.parent.parent / "Tools"))
++
++from winmerge_ai_exporter import (
++    load_from_patch_file,
++    export_ai_review_package,
++    estimate_for_diffs,
++)
++
++
++def export_package(patch_path: str, output_dir: str, **kwargs) -> str:
++    """Entry point called by WinMerge plugin host."""
++    diffs = load_from_patch_file(patch_path)
++    out = export_ai_review_package(
++        diffs,
++        output_dir=output_dir,
++        context_lines=kwargs.get("context_lines", 30),
++        skip_whitespace=kwargs.get("skip_whitespace", True),
++        skip_comments=kwargs.get("skip_comments", True),
++    )
++    return str(out)
++
++
++def estimate_tokens(patch_path: str) -> dict:
++    """Estimate token count for a patch file."""
++    diffs = load_from_patch_file(patch_path)
++    est = estimate_for_diffs(diffs)
++    return {
++        "total_tokens": est.estimated_tokens,
++        "estimated_cost_usd": est.estimated_cost_usd,
++        "breakdown": est.breakdown,
++    }
++
++
++if __name__ == "__main__":
++    import json
++    result = export_package(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ".")
++    print(result)
+--- a/Src/auth/SessionManager.cpp
++++ b/Src/auth/SessionManager.cpp
+@@ -34,12 +34,19 @@
+ #include "SessionManager.h"
+ #include "CryptoUtils.h"
++#include "AuditLog.h"
+ 
+-bool SessionManager::ValidateToken(const std::string& token) {
+-    return CryptoUtils::VerifyHMAC(token, m_secret_key);
++bool SessionManager::ValidateToken(const std::string& token, const RequestContext& ctx) {
++    bool valid = CryptoUtils::VerifyHMAC(token, m_secret_key);
++    AuditLog::Record(ctx.user_id, "token_validate", valid ? "ok" : "fail");
++    if (!valid && ctx.failure_count > MAX_FAILURES) {
++        LockAccount(ctx.user_id);
++        AuditLog::Record(ctx.user_id, "account_locked", "excessive_failures");
++    }
++    return valid;
+ }
+ 
++void SessionManager::LockAccount(const std::string& user_id) {
++    std::lock_guard<std::mutex> guard(m_accounts_mutex);
++    m_locked_accounts.insert(user_id);
++}

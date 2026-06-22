@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ============================================================
+     WinMerge AI Review Exporter Plugin
+     File:    AIReviewExporter.sct
+     Place in: %APPDATA%\WinMerge\Plugins\  (user)
+           or: <WinMerge Install>\Plugins\   (system-wide)
+
+     Adds three menu items under WinMerge's Plugins menu:
+       · Export AI Review Package
+       · Copy AI Review Prompt
+       · Estimate AI Tokens
+
+     Requirements:
+       Python 3.10+ on PATH, with winmerge-ai-exporter installed:
+         pip install winmerge-ai-exporter
+     OR the package dropped alongside this file:
+         Plugins\winmerge_ai_exporter\__init__.py  etc.
+     ============================================================ -->
+<scriptlet>
+<registration
+    description="AI Review Exporter"
+    progid="WinMerge.Plugin.AIReviewExporter"
+    version="1.00"
+    classid="{A7B3C2D4-E5F6-4A8B-9C0D-1E2F3A4B5C6D}"
+    EventHandlerFile="AIReviewExporter.sct">
+</registration>
+
+<implements type="Automation" id="Automation">
+
+<property name="PluginEvent">
+    <get>
+        <![CDATA[
+        function get_PluginEvent() {
+            return "FILE_PACK_UNPACK";
+        }
+        ]]>
+    </get>
+</property>
+
+<property name="PluginDescription">
+    <get>
+        <![CDATA[
+        function get_PluginDescription() {
+            return "Export diffs as an AI-ready architecture review package. " +
+                   "Adds: Export AI Review Package | Copy AI Review Prompt | Estimate AI Tokens";
+        }
+        ]]>
+    </get>
+</property>
+
+<property name="PluginFileFilters">
+    <get>
+        <![CDATA[
+        function get_PluginFileFilters() {
+            return "\\.diff$;\\.patch$";
+        }
+        ]]>
+    </get>
+</property>
+
+<property name="PluginIsAutomatic">
+    <get>
+        <![CDATA[
+        function get_PluginIsAutomatic() {
+            return false;
+        }
+        ]]>
+    </get>
+</property>
+
+<!-- ============================================================
+     Helper: locate Python and the exporter CLI
+     ============================================================ -->
+<method name="_FindPython">
+    <![CDATA[
+    function _FindPython() {
+        var candidates = ["python", "python3", "py"];
+        var shell = new ActiveXObject("WScript.Shell");
+        for (var i = 0; i < candidates.length; i++) {
+            try {
+                var exec = shell.Exec(candidates[i] + " --version");
+                exec.StdOut.ReadAll();
+                if (exec.ExitCode === 0) return candidates[i];
+            } catch(e) {}
+        }
+        throw new Error("Python not found on PATH. Install Python 3.10+ and ensure it is on your PATH.");
+    }
+    ]]>
+</method>
+
+<method name="_RunPython">
+    <![CDATA[
+    function _RunPython(subcommand, extraArgs) {
+        var shell = new ActiveXObject("WScript.Shell");
+        var python = _FindPython();
+        var pluginDir = new ActiveXObject("Scripting.FileSystemObject")
+                            .GetParentFolderName(WScript.ScriptFullName);
+        var cmd = '"' + python + '" -m winmerge_ai_exporter ' + subcommand;
+        if (extraArgs) cmd += " " + extraArgs;
+
+        // Run in a visible cmd window so the user can see progress
+        shell.Run('cmd /c ' + cmd + ' & pause', 1, true);
+        return 0;
+    }
+    ]]>
+</method>
+
+<!-- ============================================================
+     Menu action: Export AI Review Package
+     ============================================================ -->
+<method name="ExportAIReviewPackage">
+    <PARAMETER name="filePatch"/>
+    <![CDATA[
+    function ExportAIReviewPackage(filePatch) {
+        var fso = new ActiveXObject("Scripting.FileSystemObject");
+        var shell = new ActiveXObject("WScript.Shell");
+
+        if (!fso.FileExists(filePatch)) {
+            shell.Popup(
+                "No patch file found.\n\n" +
+                "Use File \u2192 Create Patch first, then run this plugin on the .patch file.",
+                0, "AI Review Exporter", 16
+            );
+            return false;
+        }
+
+        // Default output: sibling folder of the patch file
+        var outDir = fso.GetParentFolderName(filePatch);
+
+        var python = _FindPython();
+        var cmd = '"' + python + '" -m winmerge_ai_exporter export' +
+                  ' --patch "' + filePatch + '"' +
+                  ' --output "' + outDir + '"';
+
+        shell.Run('cmd /c ' + cmd, 1, true);
+
+        var reviewDir = outDir + "\\ai_review";
+        if (fso.FolderExists(reviewDir)) {
+            var choice = shell.Popup(
+                "AI Review Package exported to:\n" + reviewDir +
+                "\n\nOpen the folder now?",
+                0, "AI Review Exporter", 4 + 32
+            );
+            if (choice === 6) {  // Yes
+                shell.Run('explorer "' + reviewDir + '"');
+            }
+        }
+        return true;
+    }
+    ]]>
+</method>
+
+<!-- ============================================================
+     Menu action: Copy AI Review Prompt to Clipboard
+     ============================================================ -->
+<method name="CopyAIReviewPrompt">
+    <PARAMETER name="filePatch"/>
+    <![CDATA[
+    function CopyAIReviewPrompt(filePatch) {
+        var fso = new ActiveXObject("Scripting.FileSystemObject");
+        var shell = new ActiveXObject("WScript.Shell");
+
+        if (!fso.FileExists(filePatch)) {
+            shell.Popup(
+                "No patch file found. Use File \u2192 Create Patch first.",
+                0, "AI Review Exporter", 16
+            );
+            return false;
+        }
+
+        var python = _FindPython();
+        // Write prompt to a temp file then clip it
+        var tmpFile = shell.ExpandEnvironmentStrings("%TEMP%") + "\\ai_review_prompt.txt";
+        var outDir  = shell.ExpandEnvironmentStrings("%TEMP%") + "\\ai_review_tmp";
+
+        var cmd = '"' + python + '" -m winmerge_ai_exporter copy-prompt' +
+                  ' --patch "' + filePatch + '"' +
+                  ' --output "' + outDir + '"';
+        shell.Run('cmd /c ' + cmd, 0, true);
+
+        // Prompt is written to outDir\review_prompt.txt by fallback path
+        var promptFile = outDir + "\\review_prompt.txt";
+        if (fso.FileExists(promptFile)) {
+            shell.Run('cmd /c clip < "' + promptFile + '"', 0, true);
+            shell.Popup(
+                "AI Review Prompt copied to clipboard!\n\n" +
+                "Paste it into ChatGPT, Claude, Gemini, or any LLM.",
+                0, "AI Review Exporter", 64
+            );
+        } else {
+            shell.Popup("Failed to generate prompt. Check Python installation.", 0, "Error", 16);
+        }
+        return true;
+    }
+    ]]>
+</method>
+
+<!-- ============================================================
+     Menu action: Estimate AI Tokens
+     ============================================================ -->
+<method name="EstimateAITokens">
+    <PARAMETER name="filePatch"/>
+    <![CDATA[
+    function EstimateAITokens(filePatch) {
+        var fso = new ActiveXObject("Scripting.FileSystemObject");
+        var shell = new ActiveXObject("WScript.Shell");
+
+        if (!fso.FileExists(filePatch)) {
+            shell.Popup(
+                "No patch file found. Use File \u2192 Create Patch first.",
+                0, "AI Review Exporter", 16
+            );
+            return false;
+        }
+
+        var tmpOut = shell.ExpandEnvironmentStrings("%TEMP%") + "\\ai_token_estimate.txt";
+        var python = _FindPython();
+        var cmd = '"' + python + '" -m winmerge_ai_exporter estimate' +
+                  ' --patch "' + filePatch + '" > "' + tmpOut + '" 2>&1';
+        shell.Run('cmd /c ' + cmd, 0, true);
+
+        if (fso.FileExists(tmpOut)) {
+            var f = fso.OpenTextFile(tmpOut, 1);
+            var content = f.ReadAll();
+            f.Close();
+            shell.Popup(content, 0, "Token Estimate — AI Review Exporter", 64);
+        } else {
+            shell.Popup("Estimation failed. Check Python installation.", 0, "Error", 16);
+        }
+        return true;
+    }
+    ]]>
+</method>
+
+</implements>
+</scriptlet>
