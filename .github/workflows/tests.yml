@@ -30,7 +30,27 @@ jobs:
     
     - name: Lint with syntax check
       run: |
-        find . -name "*.py" -type f | xargs python -m py_compile
+        python -c "
+        import sys, pathlib, py_compile, ast
+
+        errors = []
+        skip = {'.git', '__pycache__', '.pytest_cache', 'build', 'dist'}
+
+        for f in pathlib.Path('.').rglob('*.py'):
+            if any(p in f.parts for p in skip):
+                continue
+            try:
+                py_compile.compile(str(f), doraise=True)
+            except py_compile.PyCompileError as e:
+                errors.append(str(e))
+                print(f'FAIL: {f}  ->  {e}')
+
+        if errors:
+            print(f'\n{len(errors)} file(s) failed syntax check.')
+            sys.exit(1)
+        else:
+            print(f'All .py files passed syntax check.')
+        "
     
     - name: Run tests
       run: |
