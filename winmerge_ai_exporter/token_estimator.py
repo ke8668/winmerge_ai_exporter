@@ -1,8 +1,15 @@
 """
-token_estimator.py
-Rough token count estimation without requiring a tokenizer library.
-Uses the common heuristic: ~4 characters per token (GPT-family), and
-adjusts for code which tends to be ~3.5 chars/token.
+token_estimator.py — Token count and cost estimation for LLM API calls.
+
+MIT License - Original Author: Claude (Anthropic)
+Copyright (c) 2024-2025. See LICENSE file for details.
+
+Estimates token usage and API costs based on:
+- Diff content size
+- GPT-4o pricing model (roughly 4 chars per token)
+- Optional filtering (whitespace, comments)
+
+Uses heuristic: ~3.5 characters per token for code (vs 4 for general text).
 """
 
 from __future__ import annotations

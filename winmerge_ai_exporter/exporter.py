@@ -1,6 +1,16 @@
 """
-exporter.py
-Generates the full /ai_review/ output package from a list of FileDiff objects.
+exporter.py — Main export functionality for creating AI review packages.
+
+MIT License - Original Author: Claude (Anthropic)
+Copyright (c) 2024-2025. See LICENSE file for details.
+
+Orchestrates the export pipeline:
+- Parses diffs
+- Scores risk
+- Analyzes architecture
+- Estimates tokens
+- Generates markdown output
+- Supports multiple redaction modes
 """
 
 from __future__ import annotations
@@ -15,6 +25,7 @@ from .arch_analyzer import ArchAnalysis, analyze
 from .diff_parser import FileDiff, extract_modified_symbols
 from .risk_scorer import RiskResult, score_file
 from .token_estimator import TokenEstimate, estimate_for_diffs
+from .redactor import StripOptions, strip_file_diff, RedactionMode
 
 if TYPE_CHECKING:
     pass
@@ -48,6 +59,8 @@ def _render_diff_md(
     context_lines: int = 30,
     skip_whitespace: bool = True,
     skip_comments: bool = True,
+    strip_patch: bool = False,
+    strip_options: StripOptions | None = None,
 ) -> str:
     hunks = fd.meaningful_hunks(
         skip_whitespace=skip_whitespace,
@@ -62,6 +75,13 @@ def _render_diff_md(
         f"**Hunks:** {len(hunks)}",
         "",
     ]
+
+    if strip_patch:
+        lines += [
+            "> 🔒 **Stripped Patch** — surrounding context and identifiers have been "
+            "redacted/pseudonymized. Only the core changed lines remain.",
+            "",
+        ]
 
     if symbols:
         lines += [
@@ -81,6 +101,15 @@ def _render_diff_md(
         return "\n".join(lines)
 
     lines += ["## Diff", ""]
+
+    if strip_patch:
+        stripped_hunks = strip_file_diff(fd, hunks, strip_options or StripOptions())
+        for hunk_lines in stripped_hunks:
+            lines.append("```diff")
+            lines.extend(hunk_lines)
+            lines.append("```")
+            lines.append("")
+        return "\n".join(lines)
 
     for hunk in hunks:
         header = hunk.lines[0] if hunk.lines else ""
@@ -130,6 +159,10 @@ def _render_summary(
         "",
         f"> Generated: {_now()}",
         f"> Source: {meta.get('source', 'unknown')}",
+    ]
+    if meta.get("strip_patch"):
+        lines.append("> 🔒 Mode: **Stripped Patch** (context redacted, identifiers pseudonymized)")
+    lines += [
         "",
         "## Overview",
         "",
@@ -284,6 +317,8 @@ def _render_prompt(
     symbols_map: dict[str, list[str]],
     skip_whitespace: bool = True,
     skip_comments: bool = True,
+    strip_patch: bool = False,
+    strip_options: StripOptions | None = None,
 ) -> str:
     parts = []
 
@@ -303,11 +338,29 @@ def _render_prompt(
         )
         if syms:
             header += f"\nModified symbols: {', '.join(syms[:10])}"
-        hunk_text = "\n".join("\n".join(h.lines) for h in hunks)
+
+        if strip_patch:
+            stripped_hunks = strip_file_diff(fd, hunks, strip_options or StripOptions())
+            hunk_text = "\n\n".join("\n".join(hl) for hl in stripped_hunks)
+        else:
+            hunk_text = "\n".join("\n".join(h.lines) for h in hunks)
+
         parts.append(f"{header}\n\n```diff\n{hunk_text}\n```")
 
     diff_content = "\n\n---\n\n".join(parts) if parts else "(No meaningful diffs found)"
-    return _REVIEW_PROMPT_TEMPLATE.format(diff_content=diff_content)
+    prompt = _REVIEW_PROMPT_TEMPLATE.format(diff_content=diff_content)
+
+    if strip_patch:
+        prompt = (
+            "NOTE: This patch has been stripped/pseudonymized — identifiers, "
+            "string literals, and most surrounding context have been redacted "
+            "or replaced with generic placeholders (e.g. sym_a1b2c3, <str>, <n>) "
+            "to avoid exposing proprietary algorithm details. Reason about the "
+            "*shape* of the change (control flow, structure, call patterns) "
+            "rather than literal names.\n\n" + prompt
+        )
+
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -387,15 +440,32 @@ def export_ai_review_package(
     skip_whitespace: bool = True,
     skip_comments: bool = True,
     include_json: bool = True,
+    strip_patch: bool = False,
+    strip_core_context: int = 1,
+    redaction_mode: RedactionMode = RedactionMode.API_SAFE,
 ) -> Path:
     """
     Generate the full /ai_review/ package.
+
+    strip_patch: if True, produces a "Stripped Patch" with redaction_mode
+        determining what gets preserved vs. pseudonymized.
+
+    redaction_mode: Controls what stays visible:
+      - FULL: Only keywords/operators visible
+      - API_SAFE (recommended): Public APIs, types, stdlib names visible
+      - SIGNATURE: Only function signatures visible
+
     Returns the output directory path.
     """
     out = Path(output_dir) / "ai_review"
     out.mkdir(parents=True, exist_ok=True)
     (out / "diffs").mkdir(exist_ok=True)
     (out / "prompts").mkdir(exist_ok=True)
+
+    strip_opts = StripOptions(
+        mode=redaction_mode,
+        core_context=strip_core_context,
+    )
 
     # Filter meaningful diffs
     changed = [fd for fd in file_diffs if not fd.is_identical()]
@@ -417,7 +487,7 @@ def export_ai_review_package(
         skip_comments=skip_comments,
     )
 
-    meta = {"source": source_label}
+    meta = {"source": source_label, "strip_patch": strip_patch}
 
     # --- summary.md ---
     (out / "summary.md").write_text(
@@ -439,7 +509,10 @@ def export_ai_review_package(
 
     # --- prompts/review_prompt.txt ---
     (out / "prompts" / "review_prompt.txt").write_text(
-        _render_prompt(changed, risks, symbols_map, skip_whitespace, skip_comments),
+        _render_prompt(
+            changed, risks, symbols_map, skip_whitespace, skip_comments,
+            strip_patch=strip_patch, strip_options=strip_opts,
+        ),
         encoding="utf-8",
     )
 
@@ -455,6 +528,8 @@ def export_ai_review_package(
             context_lines=context_lines,
             skip_whitespace=skip_whitespace,
             skip_comments=skip_comments,
+            strip_patch=strip_patch,
+            strip_options=strip_opts,
         )
         (out / "diffs" / f"{safe_name}.diff.md").write_text(diff_md, encoding="utf-8")
 

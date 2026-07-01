@@ -1,10 +1,16 @@
 """
-risk_scorer.py
-Heuristic risk classification for changed files.
+risk_scorer.py — Risk assessment for code changes.
+
+MIT License - Original Author: Claude (Anthropic)
+Copyright (c) 2024-2025. See LICENSE file for details.
+
+Scores files based on:
+- Modification location (auth, security, etc.)
+- Dangerous functions (eval, pickle, etc.)
+- File type sensitivity (.sql, .sh, etc.)
+
 Risk levels: Low / Med / High
 """
-
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass

@@ -1,7 +1,11 @@
 """
-diff_parser.py
-Parses unified diff output (from WinMerge or git) and extracts
-function/class-level hunks for each supported language.
+diff_parser.py — Parse unified diff format into structured format.
+
+MIT License - Original Author: Claude (Anthropic)
+Copyright (c) 2024-2025. See LICENSE file for details.
+
+Parses unified diff files (from WinMerge or git) into FileDiff and Hunk objects.
+Handles extraction of modified symbols and function-level analysis.
 """
 
 from __future__ import annotations

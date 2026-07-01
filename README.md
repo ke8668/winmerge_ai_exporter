@@ -15,6 +15,12 @@
 | **Risk scoring** | Each file rated Low / Med / High based on path, content, and size |
 | **Architecture analysis** | Detects new/removed components, API changes, new dependencies |
 | **Token optimization** | Skip whitespace/comment-only changes; token count + cost estimate |
+| **Stripped Patch** | 🔒 Redacts surrounding context with 4 redaction modes: |
+| | • **Full**: Hide all except keywords (maximum secrecy) |
+| | • **API-Safe** ⭐: Keep public APIs, types, stdlib (recommended) |
+| | • **API-Safe+Comments**: Same as API-Safe, but preserve all comments (// /* */ ''' """) |
+| | • **Signature**: Show only function signatures & control flow |
+| **Drag-and-drop** | 📂 Drag files/folders directly into GUI (visual feedback, keyboard paste support) |
 | **Multiple formats** | Markdown, unified diff, JSON |
 | **GUI + CLI** | Tkinter GUI for quick use; full CLI for automation |
 | **WinMerge plugin** | `.sct` plugin adds Tools menu items directly in WinMerge |
@@ -36,14 +42,33 @@ pip install winmerge-ai-exporter
 # From a WinMerge patch file
 winmerge-ai-exporter export --patch changes.patch --output ./review
 
-# From two folders (requires diff on PATH)
+# From two folders (pure Python — no external 'diff' tool needed)
 winmerge-ai-exporter export --left old/ --right new/ --output ./review
+
+# From two individual files (pure Python — no external 'diff' tool needed)
+winmerge-ai-exporter export --left-file old.cpp --right-file new.cpp --output ./review
 
 # Estimate tokens before exporting
 winmerge-ai-exporter estimate --patch changes.patch
 
 # Copy prompt to clipboard
 winmerge-ai-exporter copy-prompt --patch changes.patch
+
+# Stripped Patch with different redaction modes:
+winmerge-ai-exporter export --patch changes.patch --output ./review \
+  --strip-patch --redaction-mode api-safe
+
+# Keep all comments in output (best for old code with helpful comments)
+winmerge-ai-exporter export --patch changes.patch --output ./review \
+  --strip-patch --redaction-mode api-safe-comments
+
+# Maximum security (hide all identifiers)
+winmerge-ai-exporter export --patch changes.patch --output ./review \
+  --strip-patch --redaction-mode full
+
+# Adjust context window (default 1 line)
+winmerge-ai-exporter export --patch changes.patch --output ./review \
+  --strip-patch --strip-context 2
 ```
 
 ### Use (GUI)
@@ -138,9 +163,10 @@ winmerge-ai-exporter estimate [options]    # Token count only
 winmerge-ai-exporter copy-prompt [options] # Copy LLM prompt to clipboard
 
 Source (pick one):
-  --patch FILE          Unified diff / patch file
-  --xml FILE            WinMerge XML folder compare report
-  --left DIR --right DIR   Compare two folders directly
+  --patch FILE              Unified diff / patch file
+  --xml FILE                WinMerge XML folder compare report
+  --left-file F --right-file F   Compare two individual files
+  --left DIR --right DIR    Compare two folders directly (recursive, pure Python)
 
 Filters:
   --keep-whitespace     Include whitespace-only changes (default: skip)
@@ -152,6 +178,58 @@ Export options:
   --no-json             Skip JSON export
   --source-label TEXT   Label for the comparison
 ```
+
+---
+
+## Stripped Patch (Sensitive Code Redaction)
+
+For proprietary or security-sensitive codebases, enable **🔒 Stripped Patch**
+(checkbox in the GUI, `--strip-patch` on the CLI) before sending diffs to an
+external LLM. This mode:
+
+- Keeps only the core changed (`+`/`-`) lines plus a small symmetric window
+  of context (default ±1 line, configurable)
+- Collapses everything else into a `··· [N line(s) redacted] ···` marker
+- Pseudonymizes identifiers, string literals, and most numeric constants
+  into generic placeholders (`sym_a1b2c3`, `<str>`, `<n>`) — the same name
+  always maps to the same placeholder *within a file*, so an LLM can still
+  follow repeated references, but the real names never leave your machine
+- Preserves language structure (keywords, control flow, braces, common
+  stdlib calls) so the LLM can still reason about *what changed logically*
+
+```bash
+# Default: ±1 line of context, full pseudonymization
+winmerge-ai-exporter export --patch changes.patch --output ./review --strip-patch
+
+# More context, still pseudonymized
+winmerge-ai-exporter export --patch changes.patch --output ./review --strip-patch --strip-context 3
+
+# Redact context only, keep real names (lighter redaction)
+winmerge-ai-exporter export --patch changes.patch --output ./review --strip-patch --no-pseudonymize
+```
+
+Example output (`auth/SessionManager.cpp`):
+
+```diff
+@@ -34,12 +34,19 @@
+··· [1 line(s) redacted] ···
+ #include "<str>"
++#include "<str>"
+
+-bool sym_4f987b::sym_d8bce1(const std::string& sym_490e3e) {
+-    return sym_e89641::sym_74de42(sym_490e3e, sym_ccf604);
++bool sym_4f987b::sym_d8bce1(const std::string& sym_490e3e, const sym_d8b85c& sym_020b23) {
++    bool sym_72bcd6 = sym_e89641::sym_74de42(sym_490e3e, sym_ccf604);
++    if (!sym_72bcd6 && sym_020b23.sym_02c6f0 > sym_ac2604) {
++        sym_b780d0(sym_020b23.sym_8eba69);
++    }
++    return sym_72bcd6;
+ }
+```
+
+This works in both the **Export Package** and **Copy Prompt** actions —
+the LLM receives a disclaimer noting the patch is redacted and is asked to
+reason about structure/shape rather than literal names.
 
 ---
 
@@ -211,8 +289,9 @@ winmerge_ai_exporter/
 │   ├── risk_scorer.py          # Heuristic risk classification
 │   ├── arch_analyzer.py        # Architecture change inference
 │   ├── token_estimator.py      # Token count + cost estimation
+│   ├── redactor.py             # Stripped Patch: context redaction + pseudonymization
 │   ├── exporter.py             # Package generator (all output files)
-│   └── winmerge_integration.py # WinMerge formats + folder compare
+│   └── winmerge_integration.py # WinMerge formats + pure-Python file/folder compare
 ├── gui/
 │   ├── launcher.py             # Tkinter GUI
 │   ├── __init__.py
@@ -222,16 +301,20 @@ winmerge_ai_exporter/
 │   └── README.md               # Plugin installation guide
 ├── tests/
 │   ├── conftest.py
-│   ├── test_diff_parser.py     # 20 tests
-│   ├── test_risk_scorer.py     # 15 tests
-│   ├── test_arch_and_tokens.py # 22 tests
-│   └── test_integration.py     # 33 tests
+│   ├── test_diff_parser.py            # 25 tests
+│   ├── test_risk_scorer.py            # 16 tests
+│   ├── test_arch_and_tokens.py        # 23 tests
+│   ├── test_integration.py            # 26 tests
+│   ├── test_winmerge_integration.py   # 22 tests
+│   └── test_redactor.py               # 26 tests
 ├── sample_diffs/
 │   └── sample_changes.patch    # Demo patch (WinMerge C++ codebase)
 ├── launch_gui.bat              # Windows one-click GUI launcher
 ├── pyproject.toml
 └── README.md
 ```
+
+**138 tests total, all passing.**
 
 ---
 

@@ -1,10 +1,18 @@
 """
-arch_analyzer.py
+arch_analyzer.py — Architecture-level analysis of code changes.
+
+MIT License - Original Author: Claude (Anthropic)
+Copyright (c) 2024-2025. See LICENSE file for details.
+
+Detects architectural changes including:
+- New/removed components and classes
+- API additions and removals
+- New dependencies and imports
+- Module-level modifications
+
 Infers architecture-level changes from the set of FileDiffs.
 Produces structured data for architecture_changes.md.
 """
-
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field

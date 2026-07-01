@@ -1,6 +1,14 @@
 """
-winmerge_integration.py
-Bridges WinMerge's output formats to our internal FileDiff model.
+winmerge_integration.py — WinMerge integration and folder comparison utilities.
+
+MIT License - Original Author: Claude (Anthropic)
+Copyright (c) 2024-2025. See LICENSE file for details.
+
+Provides:
+- Patch file loading (unified diff format)
+- Folder comparison (pure Python, no external diff)
+- XML report parsing from WinMerge
+- Multi-language support (C/C++/Python/Java/etc.)
 
 WinMerge can export:
   1. Unified diff / patch files  (File → Create Patch)
@@ -8,8 +16,6 @@ WinMerge can export:
 
 This module handles both.
 """
-
-from __future__ import annotations
 
 import os
 import re
@@ -106,7 +112,7 @@ def _try_int(s: str) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Generate diff by calling external diff (for folder compare)
+# 3. Generate diff using pure Python (no external tools required)
 # ---------------------------------------------------------------------------
 
 def generate_diff_between_folders(
@@ -115,35 +121,174 @@ def generate_diff_between_folders(
     exclude_patterns: list[str] | None = None,
 ) -> list[FileDiff]:
     """
-    Use the system `diff` command to compare two folders recursively.
-    Falls back gracefully if diff is not available.
+    Compare two folders recursively using Python's built-in difflib.
+    No external 'diff' binary is required — this works on a stock
+    Windows Python install with no extra software.
     """
+    if not str(left_dir).strip():
+        raise RuntimeError("Left folder path is empty. Please select a folder.")
+    if not str(right_dir).strip():
+        raise RuntimeError("Right folder path is empty. Please select a folder.")
+
     left = Path(left_dir)
     right = Path(right_dir)
 
-    exclude_args = []
-    for pat in (exclude_patterns or []):
-        exclude_args += ["--exclude", pat]
+    if not left.exists():
+        raise RuntimeError(f"Left folder does not exist:\n{left}")
+    if not right.exists():
+        raise RuntimeError(f"Right folder does not exist:\n{right}")
+    if not left.is_dir():
+        raise RuntimeError(f"Left path is not a folder:\n{left}")
+    if not right.is_dir():
+        raise RuntimeError(f"Right path is not a folder:\n{right}")
 
-    cmd = ["diff", "-ruN", "--unified=5"] + exclude_args + [str(left), str(right)]
+    return _python_diff_folders(left, right, exclude_patterns or [])
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        # diff returns 0=identical, 1=differences, 2=error
-        if result.returncode == 2:
-            raise RuntimeError(f"diff error: {result.stderr}")
-        return parse_unified_diff(result.stdout)
-    except FileNotFoundError:
+
+def generate_diff_between_files(
+    left_file: str | Path,
+    right_file: str | Path,
+) -> list[FileDiff]:
+    """
+    Compare two individual files using Python's built-in difflib.
+    No external 'diff' binary is required.
+    """
+    if not str(left_file).strip():
+        raise RuntimeError("Left file path is empty. Please select a file.")
+    if not str(right_file).strip():
+        raise RuntimeError("Right file path is empty. Please select a file.")
+
+    left = Path(left_file)
+    right = Path(right_file)
+
+    if not left.exists():
+        raise RuntimeError(f"Left file does not exist:\n{left}")
+    if not right.exists():
+        raise RuntimeError(f"Right file does not exist:\n{right}")
+    if left.is_dir() or right.is_dir():
         raise RuntimeError(
-            "System 'diff' command not found. "
-            "Install diffutils (MSYS2/Git Bash on Windows) or use WinMerge's patch export."
+            "Both paths must be files, not folders. "
+            "Use 'Compare Folders' mode for directory comparison."
         )
+
+    return _python_diff_single_pair(left, right, left.name, right.name)
+
+
+_TEXT_EXTS = {
+    "c", "cpp", "cxx", "cc", "h", "hpp", "hxx",
+    "cs", "py", "java", "js", "ts", "jsx", "tsx",
+    "txt", "md", "json", "xml", "yaml", "yml",
+    "cmake", "mk", "makefile", "bat", "sh", "ps1",
+    "cfg", "ini", "toml", "gitignore",
+}
+
+
+def _is_text_file(path: Path) -> bool:
+    ext = path.suffix.lower().lstrip(".")
+    if ext in _TEXT_EXTS:
+        return True
+    try:
+        path.read_bytes()[:512].decode("utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def _read_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except Exception:
+        return []
+
+
+def _python_diff_single_pair(
+    left: Path,
+    right: Path,
+    display_left: str,
+    display_right: str,
+) -> list[FileDiff]:
+    """Diff exactly one (left, right) file pair using difflib."""
+    import difflib
+
+    old_path = f"a/{display_left}"
+    new_path = f"b/{display_right}"
+
+    if not _is_text_file(left) or not _is_text_file(right):
+        return [FileDiff(old_path=old_path, new_path=new_path, binary=True)]
+
+    l_lines = _read_lines(left)
+    r_lines = _read_lines(right)
+
+    if l_lines == r_lines:
+        return [FileDiff(old_path=old_path, new_path=new_path)]  # identical
+
+    ud = list(difflib.unified_diff(
+        l_lines, r_lines,
+        fromfile=old_path, tofile=new_path,
+        n=5,
+    ))
+    if not ud:
+        return [FileDiff(old_path=old_path, new_path=new_path)]
+
+    return parse_unified_diff("".join(ud))
+
+
+def _python_diff_folders(
+    left: Path,
+    right: Path,
+    exclude_patterns: list[str],
+) -> list[FileDiff]:
+    """Pure-Python recursive folder diff using difflib."""
+    import fnmatch
+
+    def _excluded(rel: str) -> bool:
+        return any(fnmatch.fnmatch(rel, pat) for pat in exclude_patterns)
+
+    def _collect_files(base: Path) -> dict[str, Path]:
+        result = {}
+        for p in base.rglob("*"):
+            if p.is_file():
+                rel = p.relative_to(base).as_posix()
+                if not _excluded(rel):
+                    result[rel] = p
+        return result
+
+    left_files  = _collect_files(left)
+    right_files = _collect_files(right)
+    all_keys    = sorted(set(left_files) | set(right_files))
+
+    diffs: list[FileDiff] = []
+
+    for rel in all_keys:
+        l_path = left_files.get(rel)
+        r_path = right_files.get(rel)
+
+        old_path = f"a/{rel}" if l_path else "/dev/null"
+        new_path = f"b/{rel}" if r_path else "/dev/null"
+
+        # Binary or missing on one side
+        if (l_path and not _is_text_file(l_path)) or (r_path and not _is_text_file(r_path)):
+            diffs.append(FileDiff(old_path=old_path, new_path=new_path, binary=True))
+            continue
+
+        l_lines = _read_lines(l_path) if l_path else []
+        r_lines = _read_lines(r_path) if r_path else []
+
+        if l_lines == r_lines:
+            continue  # identical — skip
+
+        import difflib
+        ud = list(difflib.unified_diff(
+            l_lines, r_lines,
+            fromfile=old_path, tofile=new_path,
+            n=5,
+        ))
+        if not ud:
+            continue
+
+        diffs.extend(parse_unified_diff("".join(ud)))
+
+    return diffs
 
 
 # ---------------------------------------------------------------------------
