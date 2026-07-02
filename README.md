@@ -28,6 +28,22 @@
 
 ---
 
+## Prerequisites
+
+Before using this tool, make sure the following are installed on your machine.
+
+| Dependency | Minimum Version | Where to get it | Why required |
+|---|---|---|---|
+| **Python** | 3.10 | [python.org](https://www.python.org/downloads/) | Runtime — the tool is written in Python |
+| **WinMerge** | 2.16.x | [winmerge.org](https://winmerge.org/downloads/) | Generates the `.patch` / diff files this tool reads |
+| **Git** | 2.x | [git-scm.com](https://git-scm.com/) | Required only for `deploy-local.bat` (versioning + tagging) |
+| **PyInstaller** | 6.x | `pip install pyinstaller` | Required only to build `.exe` releases (`build-release.bat`) |
+| **Node.js + mermaid-cli** | Node 18+ | [nodejs.org](https://nodejs.org/) then `npm install -g @mermaid-js/mermaid-cli` | Optional — only needed to export Visualize Flow diagrams locally |
+
+> **Restricted account note:** The core export and analysis features require **zero** third-party Python packages — everything runs on the Python standard library. You can use the tool on a corporate machine with no internet access.
+
+---
+
 ## Quick Start
 
 ### Install

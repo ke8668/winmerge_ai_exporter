@@ -1,0 +1,20 @@
+# requirements-dev.txt
+# Exact versions pinned from poetry.lock for use without Poetry.
+# All direct + transitive dev dependencies are listed so pip installs
+# identically on every machine and every CI runner.
+#
+# To use:
+#   pip install -r requirements-dev.txt
+#
+# To regenerate after a Poetry lock update:
+#   poetry export --only dev -f requirements.txt --without-hashes > requirements-dev.txt
+
+# Direct dependencies
+pytest==8.4.2
+pytest-cov==5.0.0
+
+# Transitive dependencies (pinned to prevent silent upstream changes)
+coverage==7.14.3
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0

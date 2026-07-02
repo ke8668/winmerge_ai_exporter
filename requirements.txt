@@ -1,0 +1,10 @@
+# requirements.txt
+# Runtime dependencies for winmerge-ai-exporter.
+#
+# This project intentionally uses ZERO third-party runtime dependencies
+# (stdlib only). This file is kept for tooling compatibility and to make
+# the contract explicit.
+#
+# Install with:
+#   pip install -r requirements.txt       (runtime — nothing to install)
+#   pip install -r requirements-dev.txt   (adds pytest/pytest-cov for testing)
