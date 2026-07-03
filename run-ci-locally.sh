@@ -1,77 +1,59 @@
 #!/bin/bash
-################################################################################
-# run-ci-locally.sh — Run the same checks as .github/workflows/tests.yml
-#
-# Use this BEFORE pushing to catch failures early, without waiting for
-# GitHub Actions. Mirrors the "test" job in the CI workflow exactly.
-#
-# Usage:
-#   chmod +x run-ci-locally.sh
-#   ./run-ci-locally.sh
-################################################################################
-
+# run-ci-locally.sh — mirrors GitHub Actions, uses isolated venv.
 set -e
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-echo -e "${YELLOW}🔍 Running local CI checks (mirrors GitHub Actions)...${NC}"
+echo ""
+echo "================================================================================"
+echo "  Running local CI checks (isolated venv)..."
+echo "================================================================================"
 echo ""
 
-# ----------------------------------------------------------------------------
-# Step 1: Syntax check (mirrors "Lint with syntax check" step)
-# ----------------------------------------------------------------------------
-echo -e "${YELLOW}📋 Step 1: Syntax check (python -m py_compile)...${NC}"
-
-FAILED=0
-while IFS= read -r -d '' file; do
-    if ! python3 -m py_compile "$file" 2>/tmp/py_compile_err; then
-        echo -e "${RED}❌ Syntax error in: $file${NC}"
-        cat /tmp/py_compile_err
-        FAILED=1
-    fi
-done < <(find . -name "*.py" -type f -not -path "./.git/*" -not -path "*/__pycache__/*" -print0)
-
-if [ "$FAILED" -eq 1 ]; then
-    echo -e "${RED}❌ Syntax check FAILED${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✅ All files compile${NC}"
-echo ""
-
-# ----------------------------------------------------------------------------
-# Step 2: Install test dependencies (mirrors "Install dependencies" step)
-# ----------------------------------------------------------------------------
-echo -e "${YELLOW}📋 Step 2: Checking test dependencies...${NC}"
-
-if ! python3 -c "import pytest, pytest_cov" 2>/dev/null; then
-    echo "Installing pytest + pytest-cov..."
-    pip install pytest pytest-cov -q
-fi
-echo -e "${GREEN}✅ Dependencies ready${NC}"
-echo ""
-
-# ----------------------------------------------------------------------------
-# Step 3: Run tests (mirrors "Run tests" step)
-# ----------------------------------------------------------------------------
-echo -e "${YELLOW}📋 Step 3: Running pytest...${NC}"
-echo ""
-
-if pytest tests/ -v --tb=short --cov=winmerge_ai_exporter --cov-report=term-missing; then
-    echo ""
-    echo -e "${GREEN}✅ All tests passed${NC}"
+# Step 1: Create / reuse venv
+echo "Step 1: Preparing isolated virtual environment (.venv)..."
+if [ ! -d ".venv" ]; then
+    python3 -m venv .venv
+    echo "Created new .venv"
 else
-    echo ""
-    echo -e "${RED}❌ Tests FAILED${NC}"
-    exit 1
+    echo "Reusing existing .venv"
 fi
+
+source .venv/bin/activate
 echo ""
 
-# ----------------------------------------------------------------------------
-# Done
-# ----------------------------------------------------------------------------
-echo -e "${GREEN}╔════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ✅ Local CI checks PASSED — safe to push          ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════════════════╝${NC}"
+# Step 2: Install pinned dependencies
+echo "Step 2: Installing pinned dependencies from requirements-dev.txt..."
+pip install -r requirements-dev.txt -q
+echo "Dependencies installed."
+echo ""
+
+# Step 3: Syntax check
+echo "Step 3: Syntax check (py_compile)..."
+python -c "
+import sys, pathlib, py_compile
+errors = []
+skip = {'.git', '__pycache__', '.pytest_cache', 'build', 'dist', '.venv'}
+for f in pathlib.Path('.').rglob('*.py'):
+    if any(p in f.parts for p in skip):
+        continue
+    try:
+        py_compile.compile(str(f), doraise=True)
+    except py_compile.PyCompileError as e:
+        errors.append(str(e))
+        print(f'FAIL: {f}  ->  {e}')
+if errors:
+    print(f'{len(errors)} file(s) failed.')
+    sys.exit(1)
+else:
+    print('All .py files OK.')
+"
+echo ""
+
+# Step 4: Run tests
+echo "Step 4: Running pytest..."
+pytest tests/ -v --tb=short --cov=winmerge_ai_exporter --cov-report=term-missing
+
+echo ""
+echo "================================================================================"
+echo "  Local CI checks PASSED - safe to push"
+echo "================================================================================"
+echo ""

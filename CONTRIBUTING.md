@@ -92,45 +92,54 @@ pip install pytest pytest-cov
 
 #### Committing Changes
 
-Follow the commit message format:
+This project uses **[Conventional Commits](https://www.conventionalcommits.org/)**.
+This is not just a style guide — **the CD pipeline reads your commit messages to
+automatically generate the Changelog and the GitHub Release notes**.  If you write
+a vague message like `"fixed stuff"`, it will be invisible in the release.
 
+Format:
 ```
 type(scope): subject line (50 chars max)
 
-More detailed explanation of the changes if needed.
-Wrap at 72 characters. Explain WHAT and WHY, not HOW.
+Optional longer explanation. Wrap at 72 chars.
+Explain WHAT changed and WHY, not HOW.
 
 Fixes #123
-Relates to #456
 ```
 
-Types:
-- **feat**: A new feature
-- **fix**: A bug fix
-- **docs**: Documentation changes
-- **style**: Code style changes (formatting, semicolons, etc.)
-- **refactor**: Code refactoring without feature changes
-- **perf**: Performance improvements
-- **test**: Adding or updating tests
-- **chore**: Build process, dependencies, tools
+| Type | When to use | Appears in Changelog as |
+|---|---|---|
+| `feat` | New user-visible feature | ✨ Features |
+| `fix` | Bug fix | 🐛 Bug Fixes |
+| `perf` | Performance improvement | ⚡ Performance |
+| `refactor` | Code change with no behaviour change | ♻️ Refactors |
+| `docs` | Documentation only | 📝 Docs |
+| `test` | Adding / fixing tests | 🧪 Tests |
+| `chore` / `build` / `ci` | Tooling, deps, workflows | 🔧 Chores / CI |
+
+**Breaking changes** — add `!` after the type, or add `BREAKING CHANGE:` in the footer:
+```
+feat(api)!: remove deprecated strip_file_diff() helper
+```
 
 Examples:
 ```
-feat(redactor): add api-safe-comments mode
+feat(visualizer): add Mermaid state-machine diagram output
 
-Implement comment preservation in api-safe mode to improve
-code understanding while maintaining security for general code.
+Adds a third diagram type (stateDiagram-v2) to CodeFlowAnalyzer.
+Triggered by the existing "📈 Visualize Flow" GUI button.
 
-Fixes #42
+Closes #57
 ```
 
 ```
-fix(gui): resolve TclError in pack parameters
+fix(code_flow_analyzer): filter linker .map file noise
 
-Move font and fg parameters from pack() to widget config.
-Pack only accepts layout parameters, not widget properties.
+Lines like "common.o(i.Func) refers to other.o(...)" were being
+mis-parsed as function calls, producing meaningless "Call: o()"
+nodes in the Mermaid flowchart.
 
-Relates to #38
+Fixes #61
 ```
 
 #### Creating a Pull Request
